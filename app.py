@@ -18,6 +18,46 @@ if uploaded_file is not None:
     # 📌 カラム名の前後のスペースを削除
     df.columns = df.columns.str.strip()
 
+    # 📌 タイムスタンプ（UTC）→ UTC+9(JST) へ自動変換
+    def _detect_timestamp_columns(input_df: pd.DataFrame):
+        candidates = []
+        for col in input_df.columns:
+            lower_name = str(col).lower()
+            if any(key in lower_name for key in [
+                "timestamp", "time", "date", "datetime", "時刻", "日時", "日付"
+            ]):
+                parsed = pd.to_datetime(input_df[col], errors='coerce', utc=True)
+                ratio = parsed.notna().mean()
+                if ratio >= 0.5:
+                    candidates.append((col, ratio, ("utc" in lower_name) or ("z" in lower_name)))
+        # 優先度: 列名にUTC/Zを含む > 解析成功率
+        candidates.sort(key=lambda x: (x[2], x[1]), reverse=True)
+        return [c[0] for c in candidates]
+
+    def _to_utc_plus_9(series: pd.Series) -> pd.Series:
+        parsed = pd.to_datetime(series, errors='coerce', utc=True)
+        try:
+            # タイムゾーン情報を保持したまま東京時間へ変換し、表示用途にNaiveへ
+            return parsed.dt.tz_convert('Asia/Tokyo').dt.tz_localize(None)
+        except Exception:
+            # フォールバック: UTCとしてNaive化し+9時間加算（JSTは通年UTC+9）
+            try:
+                return parsed.dt.tz_localize(None) + pd.Timedelta(hours=9)
+            except Exception:
+                return pd.Series([pd.NaT] * len(series), index=series.index)
+
+    timestamp_cols = _detect_timestamp_columns(df)
+    selected_ts_col = timestamp_cols[0] if len(timestamp_cols) > 0 else None
+    if selected_ts_col is not None:
+        df['Timestamp (UTC+9)'] = _to_utc_plus_9(df[selected_ts_col])
+        st.info(
+            f"⏱️ タイムスタンプ列 '{selected_ts_col}' をUTCとして解釈し、UTC+9(Asia/Tokyo)に変換して突合します。"
+        )
+        # 必要に応じサンプル表示（過剰表示を避けるため最初の数行のみ）
+        st.dataframe(df[[selected_ts_col, 'Timestamp (UTC+9)']].head(10))
+    else:
+        st.warning("⏱️ タイムスタンプ列が見つかりませんでした。CSVの日時列名をご確認ください。")
+
     # 📌 必要なカラムがあるかチェック
     required_columns = ['Latitude (°)', 'Longitude (°)', 'Dose rate (gamma) (µSv/h)']
     if not all(col in df.columns for col in required_columns):
